@@ -39,6 +39,7 @@ function publicState(room, viewerId) {
       name: p.name,
       isHost: p.isHost,
       isEliminated: p.isEliminated,
+      isSpectator: p.isSpectator || false,
     })),
     answers: (room.phase === 'guessing' || room.phase === 'results')
       ? room.answers.map(a => ({
@@ -58,7 +59,7 @@ function publicState(room, viewerId) {
 }
 
 function eligibleGuessers(room) {
-  return room.players.filter(p => !p.isHost && !p.isEliminated);
+  return room.players.filter(p => !p.isHost && !p.isEliminated && !p.isSpectator);
 }
 
 function advanceGuesser(room) {
@@ -113,11 +114,12 @@ app.prepare().then(() => {
     socket.on('join-room', ({ name, code }, cb) => {
       const room = rooms[code?.toUpperCase()];
       if (!room) return cb({ success: false, error: 'Room not found' });
-      if (room.phase !== 'lobby') return cb({ success: false, error: 'Game already started' });
-      room.players.push({ id: socket.id, name: name.trim(), isHost: false, isEliminated: false });
+      // Allow joining mid-game as a spectator for this round
+      const isSpectator = room.phase !== 'lobby';
+      room.players.push({ id: socket.id, name: name.trim(), isHost: false, isEliminated: false, isSpectator });
       socket.join(room.code);
       socket.data.room = room.code;
-      cb({ success: true, code: room.code });
+      cb({ success: true, code: room.code, isSpectator });
       broadcastTo(io, room);
     });
 
@@ -131,7 +133,7 @@ app.prepare().then(() => {
       room.answers = [];
       room.winner = null;
       room.currentGuesserId = null;
-      room.players.forEach(p => { p.isEliminated = false; });
+      room.players.forEach(p => { p.isEliminated = false; p.isSpectator = false; });
       cb?.({ success: true });
       broadcastTo(io, room);
     });
@@ -142,7 +144,8 @@ app.prepare().then(() => {
       if (room.answers.find(a => a.authorId === socket.id)) return cb?.({ success: false, error: 'Already submitted' });
       room.answers.push({ id: `${Date.now()}-${Math.random()}`, text: text.trim(), authorId: socket.id, isGuessed: false });
       cb?.({ success: true });
-      if (room.answers.length === room.players.length) {
+      const activePlayers = room.players.filter(p => !p.isSpectator);
+      if (room.answers.length === activePlayers.length) {
         room.answers = shuffle(room.answers);
         room.phase = 'guessing';
         const first = eligibleGuessers(room)[0];
@@ -187,7 +190,7 @@ app.prepare().then(() => {
       room.answers = [];
       room.winner = null;
       room.currentGuesserId = null;
-      room.players.forEach(p => { p.isEliminated = false; });
+      room.players.forEach(p => { p.isEliminated = false; p.isSpectator = false; });
       broadcastTo(io, room);
     });
 
@@ -195,7 +198,10 @@ app.prepare().then(() => {
       const room = rooms[socket.data.room];
       if (!room) return;
       room.players = room.players.filter(p => p.id !== socket.id);
-      room.answers = room.answers.filter(a => a.authorId !== socket.id);
+      // Only remove their answer if the game hasn't started — mid-game keep it so the round stays intact
+      if (room.phase === 'lobby' || room.phase === 'writing') {
+        room.answers = room.answers.filter(a => a.authorId !== socket.id);
+      }
       if (room.players.length === 0) { delete rooms[socket.data.room]; return; }
       if (!room.players.find(p => p.isHost)) room.players[0].isHost = true;
       if (room.phase === 'guessing') {

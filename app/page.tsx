@@ -10,6 +10,7 @@ interface Player {
   name: string;
   isHost: boolean;
   isEliminated: boolean;
+  isSpectator: boolean;
 }
 
 interface Answer {
@@ -43,11 +44,18 @@ export default function Home() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [gs, setGs] = useState<GameState | null>(null);
   const [error, setError] = useState("");
+  const [disconnected, setDisconnected] = useState(false);
 
   // Landing inputs
-  const [nameInput, setNameInput] = useState("");
-  const [codeInput, setCodeInput] = useState("");
-  const [mode, setMode] = useState<"home" | "join">("home");
+  const [nameInput, setNameInput] = useState(() => {
+    try { return localStorage.getItem("things:name") || ""; } catch { return ""; }
+  });
+  const [codeInput, setCodeInput] = useState(() => {
+    try { return localStorage.getItem("things:code") || ""; } catch { return ""; }
+  });
+  const [mode, setMode] = useState<"home" | "join">(() => {
+    try { return localStorage.getItem("things:code") ? "join" : "home"; } catch { return "home"; }
+  });
 
   // Lobby / writing
   const [topicInput, setTopicInput] = useState("");
@@ -67,6 +75,15 @@ export default function Home() {
     s.on("game-state", (state: GameState) => {
       setGs(state);
       setError("");
+      setDisconnected(false);
+    });
+    s.on("disconnect", () => {
+      setDisconnected(true);
+    });
+    s.on("connect", () => {
+      // On reconnect, clear stale game state so they can rejoin
+      setDisconnected(false);
+      setGs(null);
     });
     return () => { s.disconnect(); };
   }, []);
@@ -82,6 +99,7 @@ export default function Home() {
 
   const createRoom = useCallback(() => {
     if (!socket || !nameInput.trim()) return;
+    try { localStorage.setItem("things:name", nameInput.trim()); } catch {}
     socket.emit("create-room", { name: nameInput.trim() }, (r: { success: boolean }) => {
       if (!r.success) setError("Could not create room.");
     });
@@ -89,9 +107,16 @@ export default function Home() {
 
   const joinRoom = useCallback(() => {
     if (!socket || !nameInput.trim() || codeInput.length !== 4) return;
+    try {
+      localStorage.setItem("things:name", nameInput.trim());
+      localStorage.setItem("things:code", codeInput.toUpperCase());
+    } catch {}
     socket.emit("join-room", { name: nameInput.trim(), code: codeInput.toUpperCase() },
       (r: { success: boolean; error?: string }) => {
-        if (!r.success) setError(r.error || "Could not join room.");
+        if (!r.success) {
+          setError(r.error || "Could not join room.");
+          try { localStorage.removeItem("things:code"); } catch {}
+        }
       });
   }, [socket, nameInput, codeInput]);
 
@@ -134,6 +159,17 @@ export default function Home() {
 
   if (!socket) {
     return <Screen><p className="text-slate-400 text-sm">Connecting…</p></Screen>;
+  }
+
+  if (disconnected) {
+    return (
+      <Screen>
+        <div className="bg-yellow-900/60 border border-yellow-700 rounded-2xl p-5 text-center space-y-2">
+          <p className="text-yellow-300 font-semibold">Connection lost</p>
+          <p className="text-yellow-400 text-sm">Reconnecting… if this takes a while the server may have restarted.</p>
+        </div>
+      </Screen>
+    );
   }
 
   // ── Landing ───────────────────────────────────────────────────────────────
@@ -262,7 +298,12 @@ export default function Home() {
           <h2 className="text-2xl font-bold text-white leading-snug">{gs.topic}</h2>
         </div>
         <Card>
-          {gs.hasSubmitted ? (
+          {me?.isSpectator ? (
+            <div className="text-center py-2 space-y-1">
+              <p className="text-slate-400 font-semibold">You joined mid-round</p>
+              <p className="text-slate-500 text-sm">You&apos;ll play in the next round!</p>
+            </div>
+          ) : gs.hasSubmitted ? (
             <div className="text-center py-2 space-y-3">
               <p className="text-green-400 font-semibold text-lg">Answer submitted!</p>
               <p className="text-slate-400 text-sm">
@@ -302,7 +343,7 @@ export default function Home() {
   if (gs.phase === "guessing") {
     const unguessed = (gs.answers || []).filter(a => !a.isGuessed);
     const guessed = (gs.answers || []).filter(a => a.isGuessed);
-    const targets = gs.players.filter(p => !p.isEliminated && p.id !== gs.myId);
+    const targets = gs.players.filter(p => !p.isEliminated && !p.isSpectator && p.id !== gs.myId);
 
     return (
       <Screen>
