@@ -302,7 +302,7 @@ export default function Home() {
   if (gs.phase === "guessing") {
     const unguessed = (gs.answers || []).filter(a => !a.isGuessed);
     const guessed = (gs.answers || []).filter(a => a.isGuessed);
-    const targets = gs.players.filter(p => !p.isEliminated && !p.isHost);
+    const targets = gs.players.filter(p => !p.isEliminated && p.id !== gs.myId);
 
     return (
       <Screen>
