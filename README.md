@@ -24,6 +24,15 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). Share the 4-letter room code with friends.
 
+## Deploy to Railway
+
+1. Push this repo to GitHub
+2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub repo
+3. Select this repo — Railway will auto-detect Node.js and use the `railway.json` config
+4. Once deployed, Railway gives you a public URL to share with anyone
+
+No extra config needed. Railway sets the `PORT` automatically and the app picks it up.
+
 ## Stack
 
 - Next.js (App Router)
