@@ -40,6 +40,8 @@ function publicState(room, viewerId) {
       isHost: p.isHost,
       isEliminated: p.isEliminated,
       isSpectator: p.isSpectator || false,
+      isVirtual: p.isVirtual || false,
+      ownerId: p.ownerId || null,
     })),
     answers: (room.phase === 'guessing' || room.phase === 'results')
       ? room.answers.map(a => ({
@@ -55,6 +57,12 @@ function publicState(room, viewerId) {
     winner: room.winner,
     myId: viewerId,
     hasSubmitted: room.answers.some(a => a.authorId === viewerId),
+    myVpSubmitted: room.answers
+      .filter(a => {
+        const p = room.players.find(q => q.id === a.authorId);
+        return p?.isVirtual && p.ownerId === viewerId;
+      })
+      .map(a => a.authorId),
   };
 }
 
@@ -138,11 +146,17 @@ app.prepare().then(() => {
       broadcastTo(io, room);
     });
 
-    socket.on('submit-answer', ({ text }, cb) => {
+    socket.on('submit-answer', ({ text, asPlayerId }, cb) => {
       const room = rooms[socket.data.room];
       if (!room || room.phase !== 'writing' || !text?.trim()) return cb?.({ success: false });
-      if (room.answers.find(a => a.authorId === socket.id)) return cb?.({ success: false, error: 'Already submitted' });
-      room.answers.push({ id: `${Date.now()}-${Math.random()}`, text: text.trim(), authorId: socket.id, isGuessed: false });
+      let authorId = socket.id;
+      if (asPlayerId) {
+        const vp = room.players.find(p => p.id === asPlayerId && p.isVirtual && p.ownerId === socket.id);
+        if (!vp) return cb?.({ success: false, error: 'Not authorized' });
+        authorId = asPlayerId;
+      }
+      if (room.answers.find(a => a.authorId === authorId)) return cb?.({ success: false, error: 'Already submitted' });
+      room.answers.push({ id: `${Date.now()}-${Math.random()}`, text: text.trim(), authorId, isGuessed: false });
       cb?.({ success: true });
       const activePlayers = room.players.filter(p => !p.isSpectator);
       if (room.answers.length === activePlayers.length) {
@@ -155,9 +169,16 @@ app.prepare().then(() => {
       broadcastTo(io, room);
     });
 
-    socket.on('make-guess', ({ answerId, targetPlayerId }, cb) => {
+    socket.on('make-guess', ({ answerId, targetPlayerId, asPlayerId }, cb) => {
       const room = rooms[socket.data.room];
-      if (!room || room.phase !== 'guessing' || room.currentGuesserId !== socket.id) return;
+      if (!room || room.phase !== 'guessing') return;
+      let effectiveId = socket.id;
+      if (asPlayerId) {
+        const vp = room.players.find(p => p.id === asPlayerId && p.isVirtual && p.ownerId === socket.id);
+        if (!vp) return;
+        effectiveId = asPlayerId;
+      }
+      if (room.currentGuesserId !== effectiveId) return;
       const answer = room.answers.find(a => a.id === answerId && !a.isGuessed);
       const target = room.players.find(p => p.id === targetPlayerId);
       if (!answer || !target) return;
@@ -169,7 +190,7 @@ app.prepare().then(() => {
         const unguessed = room.answers.filter(a => !a.isGuessed);
         if (unguessed.length <= 1) {
           endRound(room);
-        } else if (room.players.find(p => p.id === socket.id)?.isEliminated) {
+        } else if (room.players.find(p => p.id === effectiveId)?.isEliminated) {
           advanceGuesser(room);
         }
         // else: guesser keeps their turn
@@ -178,6 +199,25 @@ app.prepare().then(() => {
       }
 
       cb?.({ correct, authorName: target.name });
+      broadcastTo(io, room);
+    });
+
+    socket.on('add-virtual-player', ({ name }, cb) => {
+      const room = rooms[socket.data.room];
+      if (!room || room.phase !== 'lobby' || !name?.trim()) return cb?.({ success: false });
+      const id = `vp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      room.players.push({ id, name: name.trim(), isHost: false, isEliminated: false, isSpectator: false, isVirtual: true, ownerId: socket.id });
+      cb?.({ success: true, id });
+      broadcastTo(io, room);
+    });
+
+    socket.on('remove-virtual-player', ({ playerId }, cb) => {
+      const room = rooms[socket.data.room];
+      if (!room || room.phase !== 'lobby') return cb?.({ success: false });
+      const player = room.players.find(p => p.id === playerId);
+      if (!player?.isVirtual || player.ownerId !== socket.id) return cb?.({ success: false });
+      room.players = room.players.filter(p => p.id !== playerId);
+      cb?.({ success: true });
       broadcastTo(io, room);
     });
 
@@ -197,15 +237,16 @@ app.prepare().then(() => {
     socket.on('disconnect', () => {
       const room = rooms[socket.data.room];
       if (!room) return;
-      room.players = room.players.filter(p => p.id !== socket.id);
-      // Only remove their answer if the game hasn't started — mid-game keep it so the round stays intact
+      const vpIds = room.players.filter(p => p.isVirtual && p.ownerId === socket.id).map(p => p.id);
+      room.players = room.players.filter(p => p.id !== socket.id && !(p.isVirtual && p.ownerId === socket.id));
+      // Only remove answers if the game hasn't started — mid-game keep them so the round stays intact
       if (room.phase === 'lobby' || room.phase === 'writing') {
-        room.answers = room.answers.filter(a => a.authorId !== socket.id);
+        room.answers = room.answers.filter(a => a.authorId !== socket.id && !vpIds.includes(a.authorId));
       }
       if (room.players.length === 0) { delete rooms[socket.data.room]; return; }
       if (!room.players.find(p => p.isHost)) room.players[0].isHost = true;
       if (room.phase === 'guessing') {
-        if (room.currentGuesserId === socket.id) advanceGuesser(room);
+        if (room.currentGuesserId === socket.id || vpIds.includes(room.currentGuesserId)) advanceGuesser(room);
         const unguessed = room.answers.filter(a => !a.isGuessed);
         if (unguessed.length <= 1) endRound(room);
       }

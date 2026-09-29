@@ -11,6 +11,8 @@ interface Player {
   isHost: boolean;
   isEliminated: boolean;
   isSpectator: boolean;
+  isVirtual: boolean;
+  ownerId: string | null;
 }
 
 interface Answer {
@@ -32,6 +34,7 @@ interface GameState {
   winner: Player | null;
   myId: string;
   hasSubmitted: boolean;
+  myVpSubmitted: string[];
 }
 
 function cn(...args: (string | false | null | undefined)[]) {
@@ -545,8 +548,13 @@ export default function Home() {
   const [lastResult, setLastResult] = useState<{ correct: boolean; name: string } | null>(null);
 
   // Phone pass (hand off device to phoneless player during guessing)
-  const [phonePass, setPhonePass] = useState<{ step: "naming" | "gate" | "active" | "return"; name: string } | null>(null);
+  const [phonePass, setPhonePass] = useState<{ step: "naming" | "gate" | "active" | "return"; name: string; virtualPlayerId?: string } | null>(null);
   const [passNameInput, setPassNameInput] = useState("");
+
+  // Virtual player writing
+  const [vpWriting, setVpWriting] = useState<{ id: string; name: string; step: "gate" | "write" } | null>(null);
+  const [vpAnswerText, setVpAnswerText] = useState("");
+  const [vpNameInput, setVpNameInput] = useState("");
 
   // ── Socket ────────────────────────────────────────────────────────────────
 
@@ -574,15 +582,37 @@ export default function Home() {
 
   // When proxy turn ends (turn moved on), show return gate
   useEffect(() => {
-    if (phonePass?.step === "active" && gs?.currentGuesserId !== gs?.myId) {
+    if (phonePass?.step !== "active") return;
+    const effectiveGuesserId = phonePass.virtualPlayerId ?? gs?.myId;
+    if (gs?.currentGuesserId !== effectiveGuesserId) {
       setPhonePass(p => p ? { step: "return", name: p.name } : null);
     }
-  }, [gs?.currentGuesserId, gs?.myId, phonePass?.step]);
+  }, [gs?.currentGuesserId, gs?.myId, phonePass?.step, phonePass?.virtualPlayerId]);
 
   // Clear phone pass on phase change
   useEffect(() => {
     if (gs?.phase !== "guessing") setPhonePass(null);
   }, [gs?.phase]);
+
+  // Auto-show pass gate when a virtual player I own becomes the current guesser
+  useEffect(() => {
+    if (gs?.phase !== "guessing" || phonePass) return;
+    const currentGuesser = gs.players.find(p => p.id === gs.currentGuesserId);
+    if (currentGuesser?.isVirtual && currentGuesser.ownerId === gs.myId) {
+      setPhonePass({ step: "gate", name: currentGuesser.name, virtualPlayerId: currentGuesser.id });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gs?.currentGuesserId, gs?.phase, gs?.myId]);
+
+  // After my own answer is submitted, queue up any virtual players that still need to write
+  const myVpSubmittedKey = gs?.myVpSubmitted?.join(",") ?? "";
+  useEffect(() => {
+    if (gs?.phase !== "writing" || !gs.hasSubmitted || vpWriting) return;
+    const myVps = gs.players.filter(p => p.isVirtual && p.ownerId === gs.myId);
+    const nextVp = myVps.find(p => !gs.myVpSubmitted.includes(p.id));
+    if (nextVp) setVpWriting({ id: nextVp.id, name: nextVp.name, step: "gate" });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gs?.phase, gs?.hasSubmitted, myVpSubmittedKey]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
@@ -629,14 +659,42 @@ export default function Home() {
 
   const confirmGuess = useCallback(() => {
     if (!socket || !selectedAnswerId || !selectedTargetId) return;
-    socket.emit("make-guess", { answerId: selectedAnswerId, targetPlayerId: selectedTargetId },
-      (r: { correct: boolean; authorName: string }) => {
-        setLastResult({ correct: r.correct, name: r.authorName });
-        setTimeout(() => setLastResult(null), 2000);
-      });
-  }, [socket, selectedAnswerId, selectedTargetId]);
+    const payload: { answerId: string; targetPlayerId: string; asPlayerId?: string } = {
+      answerId: selectedAnswerId,
+      targetPlayerId: selectedTargetId,
+    };
+    if (phonePass?.virtualPlayerId) payload.asPlayerId = phonePass.virtualPlayerId;
+    socket.emit("make-guess", payload, (r: { correct: boolean; authorName: string }) => {
+      setLastResult({ correct: r.correct, name: r.authorName });
+      setTimeout(() => setLastResult(null), 2000);
+    });
+  }, [socket, selectedAnswerId, selectedTargetId, phonePass?.virtualPlayerId]);
 
   const newRound = useCallback(() => socket?.emit("new-round"), [socket]);
+
+  const addVirtualPlayer = useCallback(() => {
+    if (!socket || !vpNameInput.trim()) return;
+    socket.emit("add-virtual-player", { name: vpNameInput.trim() }, (r: { success: boolean }) => {
+      if (r.success) setVpNameInput("");
+    });
+  }, [socket, vpNameInput]);
+
+  const removeVirtualPlayer = useCallback((playerId: string) => {
+    socket?.emit("remove-virtual-player", { playerId });
+  }, [socket]);
+
+  const submitVpAnswer = useCallback(() => {
+    if (!socket || !vpAnswerText.trim() || !vpWriting) return;
+    socket.emit("submit-answer", { text: vpAnswerText.trim(), asPlayerId: vpWriting.id },
+      (r: { success: boolean; error?: string }) => {
+        if (!r.success) setError(r.error || "Failed to submit.");
+        else {
+          setVpAnswerText("");
+          setVpWriting(null); // effect will queue next pending VP
+        }
+      }
+    );
+  }, [socket, vpAnswerText, vpWriting]);
 
   const me = gs?.players.find(p => p.id === gs.myId);
   const isMyTurn = gs?.phase === "guessing" && gs.currentGuesserId === gs?.myId;
@@ -741,6 +799,32 @@ export default function Home() {
             ))}
           </ul>
         </Card>
+        <Card>
+          <p className="text-slate-400 text-xs uppercase tracking-widest">Phone-pass players</p>
+          <p className="text-slate-500 text-xs">Add players who will share your device</p>
+          {gs.players.filter(p => p.isVirtual && p.ownerId === gs.myId).map(p => (
+            <div key={p.id} className="flex items-center justify-between text-sm">
+              <span className="text-white">{p.name}</span>
+              <button onClick={() => removeVirtualPlayer(p.id)} className="text-slate-500 hover:text-red-400 text-xs">remove</button>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <Input
+              placeholder="Their name"
+              value={vpNameInput}
+              onChange={e => setVpNameInput(e.target.value)}
+              maxLength={24}
+              onKeyDown={e => { if (e.key === "Enter") addVirtualPlayer(); }}
+            />
+            <button
+              onClick={addVirtualPlayer}
+              disabled={!vpNameInput.trim()}
+              className="bg-slate-600 hover:bg-slate-500 disabled:opacity-40 text-white text-sm font-semibold px-4 rounded-xl transition flex-shrink-0"
+            >
+              Add
+            </button>
+          </div>
+        </Card>
         {me?.isHost ? (
           <Card>
             <Label>Pick a topic</Label>
@@ -767,6 +851,58 @@ export default function Home() {
   // ── Writing ───────────────────────────────────────────────────────────────
 
   if (gs.phase === "writing") {
+    const myVps = gs.players.filter(p => p.isVirtual && p.ownerId === gs.myId);
+    const pendingVps = myVps.filter(p => !gs.myVpSubmitted.includes(p.id));
+    const allDone = gs.hasSubmitted && pendingVps.length === 0;
+
+    // VP write gate
+    if (vpWriting?.step === "gate") {
+      return (
+        <Screen>
+          <div className="text-center">
+            <p className="text-slate-400 text-xs uppercase tracking-widest mb-2">Topic</p>
+            <h2 className="text-2xl font-bold text-white leading-snug">{gs.topic}</h2>
+          </div>
+          <div className="bg-slate-800 rounded-2xl p-8 text-center space-y-4">
+            <p className="text-slate-400 text-sm uppercase tracking-widest">Pass the phone to</p>
+            <p className="text-4xl font-bold text-white">{vpWriting.name}</p>
+            <p className="text-slate-500 text-sm">Everyone else — no peeking!</p>
+          </div>
+          <Btn className="w-full bg-violet-600 hover:bg-violet-500 py-4 text-lg" onClick={() => setVpWriting({ ...vpWriting, step: "write" })}>
+            I have the phone
+          </Btn>
+        </Screen>
+      );
+    }
+
+    // VP write form
+    if (vpWriting?.step === "write") {
+      return (
+        <Screen>
+          <div className="text-center">
+            <p className="text-slate-400 text-xs uppercase tracking-widest mb-2">Topic</p>
+            <h2 className="text-2xl font-bold text-white leading-snug">{gs.topic}</h2>
+          </div>
+          <Card>
+            <Label>Your secret answer, {vpWriting.name}</Label>
+            <textarea
+              className="w-full bg-slate-700 text-white rounded-xl px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+              placeholder="Write your answer…"
+              rows={3}
+              value={vpAnswerText}
+              onChange={e => setVpAnswerText(e.target.value)}
+              maxLength={200}
+              autoFocus
+            />
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            <Btn className="w-full bg-violet-600 hover:bg-violet-500" disabled={!vpAnswerText.trim()} onClick={submitVpAnswer}>
+              Submit — then pass the phone back
+            </Btn>
+          </Card>
+        </Screen>
+      );
+    }
+
     return (
       <Screen>
         <div className="text-center">
@@ -779,17 +915,7 @@ export default function Home() {
               <p className="text-slate-400 font-semibold">You joined mid-round</p>
               <p className="text-slate-500 text-sm">You&apos;ll play in the next round!</p>
             </div>
-          ) : gs.hasSubmitted ? (
-            <div className="text-center py-2 space-y-3">
-              <p className="text-green-400 font-semibold text-lg">Answer submitted!</p>
-              <p className="text-slate-400 text-sm">Waiting for others ({gs.submittedCount}/{gs.totalPlayers})</p>
-              <div className="flex gap-1.5 justify-center">
-                {Array.from({ length: gs.totalPlayers }).map((_, i) => (
-                  <div key={i} className={cn("w-3 h-3 rounded-full", i < gs.submittedCount ? "bg-violet-500" : "bg-slate-600")} />
-                ))}
-              </div>
-            </div>
-          ) : (
+          ) : !gs.hasSubmitted ? (
             <>
               <Label>Your anonymous answer</Label>
               <textarea
@@ -805,6 +931,21 @@ export default function Home() {
                 Submit Answer
               </Btn>
             </>
+          ) : allDone ? (
+            <div className="text-center py-2 space-y-3">
+              <p className="text-green-400 font-semibold text-lg">All answers submitted!</p>
+              <p className="text-slate-400 text-sm">Waiting for others ({gs.submittedCount}/{gs.totalPlayers})</p>
+              <div className="flex gap-1.5 justify-center">
+                {Array.from({ length: gs.totalPlayers }).map((_, i) => (
+                  <div key={i} className={cn("w-3 h-3 rounded-full", i < gs.submittedCount ? "bg-violet-500" : "bg-slate-600")} />
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-2 space-y-2">
+              <p className="text-green-400 font-semibold">Your answer is in!</p>
+              <p className="text-slate-400 text-sm">{pendingVps.length} phone-pass player{pendingVps.length !== 1 ? "s" : ""} still need to write</p>
+            </div>
           )}
         </Card>
         <p className="text-slate-500 text-xs text-center">{gs.submittedCount} / {gs.totalPlayers} submitted</p>
