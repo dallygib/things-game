@@ -1000,8 +1000,9 @@ export default function Home() {
   if (gs.phase === "guessing") {
     const unguessed = (gs.answers || []).filter(a => !a.isGuessed);
     const guessed = (gs.answers || []).filter(a => a.isGuessed);
-    const targets = gs.players.filter(p => !p.isEliminated && !p.isSpectator && p.id !== gs.myId);
     const isProxying = phonePass?.step === "active";
+    const activeGuesserId = (isProxying && phonePass?.virtualPlayerId) ? phonePass.virtualPlayerId : gs.myId;
+    const targets = gs.players.filter(p => !p.isEliminated && !p.isSpectator && p.id !== activeGuesserId);
     const effectivelyMyTurn = isMyTurn || isProxying;
 
     // Return gate: proxy player's turn ended, hand phone back
@@ -1033,7 +1034,7 @@ export default function Home() {
           </div>
           <Btn
             className="w-full bg-violet-600 hover:bg-violet-500 py-4 text-lg"
-            onClick={() => setPhonePass({ step: "active", name: phonePass.name })}
+            onClick={() => setPhonePass({ step: "active", name: phonePass.name, virtualPlayerId: phonePass.virtualPlayerId })}
           >
             I have the phone
           </Btn>
