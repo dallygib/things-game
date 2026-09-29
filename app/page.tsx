@@ -787,12 +787,27 @@ export default function Home() {
           <p className="text-slate-400 text-xs uppercase tracking-widest text-center">Room Code</p>
           <p className="text-5xl font-bold tracking-[0.2em] text-violet-400 text-center select-all py-1">{gs.code}</p>
           <p className="text-slate-500 text-xs text-center">Share with friends</p>
-          <button
-            onClick={() => setTvQR(true)}
-            className="w-full text-center text-slate-500 hover:text-slate-300 text-xs transition py-1"
-          >
-            📺 TV display — tap for QR code
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                const url = `${window.location.origin}/tv/${gs.code}`;
+                if (navigator.share) {
+                  navigator.share({ title: "Things — TV Display", url });
+                } else {
+                  navigator.clipboard?.writeText(url);
+                }
+              }}
+              className="flex-1 text-center text-slate-500 hover:text-slate-300 text-xs transition py-1"
+            >
+              📺 Share TV link
+            </button>
+            <button
+              onClick={() => setTvQR(true)}
+              className="flex-1 text-center text-slate-500 hover:text-slate-300 text-xs transition py-1"
+            >
+              QR code
+            </button>
+          </div>
         </Card>
 
         {tvQR && (
