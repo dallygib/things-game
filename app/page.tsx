@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
+import { QRCodeSVG } from "qrcode.react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -525,6 +526,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [disconnected, setDisconnected] = useState(false);
   const [ppMode, setPpMode] = useState(false);
+  const [tvQR, setTvQR] = useState(false);
 
   // Landing inputs
   const [nameInput, setNameInput] = useState(() => {
@@ -785,15 +787,32 @@ export default function Home() {
           <p className="text-slate-400 text-xs uppercase tracking-widest text-center">Room Code</p>
           <p className="text-5xl font-bold tracking-[0.2em] text-violet-400 text-center select-all py-1">{gs.code}</p>
           <p className="text-slate-500 text-xs text-center">Share with friends</p>
-          <a
-            href={`/tv/${gs.code}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block text-center text-slate-500 hover:text-slate-300 text-xs transition"
+          <button
+            onClick={() => setTvQR(true)}
+            className="w-full text-center text-slate-500 hover:text-slate-300 text-xs transition py-1"
           >
-            📺 TV display → /tv/{gs.code}
-          </a>
+            📺 TV display — tap for QR code
+          </button>
         </Card>
+
+        {tvQR && (
+          <div
+            className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center gap-6 px-6"
+            onClick={() => setTvQR(false)}
+          >
+            <p className="text-white text-sm uppercase tracking-widest">Scan to open TV display</p>
+            <div className="bg-white p-5 rounded-2xl">
+              <QRCodeSVG
+                value={typeof window !== "undefined" ? `${window.location.origin}/tv/${gs.code}` : `/tv/${gs.code}`}
+                size={220}
+                bgColor="#ffffff"
+                fgColor="#0f172a"
+              />
+            </div>
+            <p className="text-slate-400 text-sm font-mono">/tv/{gs.code}</p>
+            <p className="text-slate-600 text-xs">Tap anywhere to close</p>
+          </div>
+        )}
         <Card>
           <p className="text-slate-400 text-xs uppercase tracking-widest mb-2">Players ({gs.players.length})</p>
           <ul className="space-y-2">
