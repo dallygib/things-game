@@ -785,6 +785,14 @@ export default function Home() {
           <p className="text-slate-400 text-xs uppercase tracking-widest text-center">Room Code</p>
           <p className="text-5xl font-bold tracking-[0.2em] text-violet-400 text-center select-all py-1">{gs.code}</p>
           <p className="text-slate-500 text-xs text-center">Share with friends</p>
+          <a
+            href={`/tv/${gs.code}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block text-center text-slate-500 hover:text-slate-300 text-xs transition"
+          >
+            📺 TV display → /tv/{gs.code}
+          </a>
         </Card>
         <Card>
           <p className="text-slate-400 text-xs uppercase tracking-widest mb-2">Players ({gs.players.length})</p>

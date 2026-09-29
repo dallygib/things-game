@@ -94,6 +94,10 @@ function broadcastTo(io, room) {
     const s = io.sockets.sockets.get(p.id);
     if (s) s.emit('game-state', publicState(room, p.id));
   }
+  for (const id of (room.displays || [])) {
+    const s = io.sockets.sockets.get(id);
+    if (s) s.emit('game-state', publicState(room, id));
+  }
 }
 
 app.prepare().then(() => {
@@ -221,6 +225,18 @@ app.prepare().then(() => {
       broadcastTo(io, room);
     });
 
+    socket.on('join-display', ({ code }, cb) => {
+      const room = rooms[code?.toUpperCase()];
+      if (!room) return cb?.({ success: false, error: 'Room not found' });
+      if (!room.displays) room.displays = [];
+      room.displays.push(socket.id);
+      socket.join(room.code);
+      socket.data.room = room.code;
+      socket.data.isDisplay = true;
+      cb?.({ success: true, code: room.code });
+      socket.emit('game-state', publicState(room, socket.id));
+    });
+
     socket.on('new-round', () => {
       const room = rooms[socket.data.room];
       if (!room) return;
@@ -237,6 +253,10 @@ app.prepare().then(() => {
     socket.on('disconnect', () => {
       const room = rooms[socket.data.room];
       if (!room) return;
+      if (socket.data.isDisplay) {
+        room.displays = (room.displays || []).filter(id => id !== socket.id);
+        return;
+      }
       const vpIds = room.players.filter(p => p.isVirtual && p.ownerId === socket.id).map(p => p.id);
       room.players = room.players.filter(p => p.id !== socket.id && !(p.isVirtual && p.ownerId === socket.id));
       // Only remove answers if the game hasn't started — mid-game keep them so the round stays intact
